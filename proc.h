@@ -66,7 +66,6 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
-  int qlevel;                  // Process queue level
   int qtime;                   // Process ticks remaining before context switch
   int lqruns;                  // Number of times proc has run in lowest queue, for priority boosting
 };

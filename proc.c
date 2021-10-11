@@ -118,8 +118,6 @@ found:
   }
 
   p->state = EMBRYO;
-  
-  p->qlevel = q->qlevel;
   p->qtime = q->qtime;
 
   p->pid = nextpid++;
