@@ -121,7 +121,6 @@ found:
   p->qtime = q->qtime;
 
   p->pid = nextpid++;
-  q->lastusedpid = p->pid;
 
   release(&ptable.lock);
 
