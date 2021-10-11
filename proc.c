@@ -9,7 +9,9 @@
 
 struct {
   struct spinlock lock;
+  struct queue queue[4];
   struct proc proc[NPROC];
+  int qindex;
 } ptable;
 
 static struct proc *initproc;
@@ -24,6 +26,50 @@ void
 pinit(void)
 {
   initlock(&ptable.lock, "ptable");
+    
+  ptable.queue[0].qlevel = 0;
+  ptable.queue[0].qtime = 1;
+
+  ptable.queue[1].qlevel = 1;
+  ptable.queue[1].qtime = 2;
+
+  ptable.queue[2].qlevel = 2;
+  ptable.queue[2].qtime = 4;
+
+  ptable.queue[3].qlevel = 3;
+  ptable.queue[3].qtime = 8;
+}
+
+int
+findNextQueueIndex(struct queue *q, enum procstate state) 
+{
+  int c = 0;
+  int i = q->pindex;
+  
+  while(c < NPROC) {
+    if (state == UNUSED) 
+      if (q->proc[i] == 0 || q->proc[i]->state == UNUSED) {
+        //cprintf("[UNUSED] ql: %d, i: %d\n", q->qlevel, i);
+        break;
+      }
+    
+    if (state == RUNNABLE)
+      if (q->proc[i] != 0 && q->proc[i]->state == RUNNABLE) {
+        //cprintf("[RUNNABLE] ql: %d, i: %d\n", q->qlevel, i);
+        break;
+      }
+
+    c++;
+    i++;
+    if (i >= NPROC)
+      i = 0; 
+  }
+
+  // Failed to find free index.
+  if (c == NPROC)
+    return -1;
+
+  return i;
 }
 
 //PAGEBREAK: 32
@@ -35,6 +81,7 @@ static struct proc*
 allocproc(void)
 {
   struct proc *p;
+  struct queue *q;
   char *sp;
 
   acquire(&ptable.lock);
@@ -45,10 +92,17 @@ allocproc(void)
   return 0;
 
 found:
-  p->state = EMBRYO;
+  q = &ptable.queue[0];
+  int i = findNextQueueIndex(q, UNUSED);
+  if (i >= 0) {
+    q->pindex = i;
+    q->proc[i] = p;
+  }
 
-  p->queuetype = 0;
-  p->quantumsize = 4;
+  p->state = EMBRYO;
+  
+  p->qlevel = q->qlevel;
+  p->qtime = q->qtime;
 
   p->pid = nextpid++;
   release(&ptable.lock);
@@ -270,6 +324,8 @@ void
 scheduler(void)
 {
   struct proc *p;
+  struct queue *q;
+  struct queue *nq;
 
   for(;;){
     // Enable interrupts on this processor.
@@ -277,27 +333,66 @@ scheduler(void)
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
+    int found = 0;
+    for (q = ptable.queue; q < &ptable.queue[4]; q++) {
+      int i = findNextQueueIndex(q, RUNNABLE);
 
-      if (strncmp("sh", p->name, 4) == 0 || strncmp("spin", p->name, 4) == 0)
-        cprintf("Process %s is of Process ID %d, Queue Type %d, and Quantum Size %d\n", p->name, p->pid, p->queuetype, p->quantumsize);
-      
-      swtch(&cpu->scheduler, proc->context);
-      switchkvm();
-
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      proc = 0;
+      if (i >= 0) {
+        q->pindex = i;
+        p = q->proc[i];
+        found = 1;
+        break;
+      }
     }
+
+    if (!found) {
+      release(&ptable.lock);
+      continue;
+    }
+
+    // Switch to chosen process.  It is the process's job
+    // to release ptable.lock and then reacquire it
+    // before jumping back to us.
+    proc = p;
+    switchuvm(p);
+    p->state = RUNNING;
+
+    swtch(&cpu->scheduler, proc->context);
+    switchkvm();
+
+    if (!strncmp(p->name, "spin", 4)) {
+      cprintf("Process %s %d used %dms in Q%d\n", p->name, p->pid, 10, q->qlevel);
+
+      p->qtime--;
+      if (!p->qtime) {
+        if (q->qlevel < 3) {
+          nq = &ptable.queue[q->qlevel + 1];
+          int i = findNextQueueIndex(nq, UNUSED);
+          nq->proc[i] = p;
+          p->qtime = nq->qtime;
+          q->proc[q->pindex] = 0;
+        } else {
+          p->lqruns++;
+
+          if (p->lqruns >= 3) {
+            nq = &ptable.queue[0];
+            int i = findNextQueueIndex(nq, UNUSED);
+            nq->proc[i] = p;
+            p->qtime = nq->qtime;
+            p->lqruns = 0;
+            q->proc[q->pindex] = 0;
+          } else {
+            p->qtime = q->qtime;
+            q->pindex++;
+          }
+        }
+      }
+    }
+
+    // Process is done running for now.
+    // It should have changed its p->state before coming back.
+    proc = 0;
     release(&ptable.lock);
 
   }
