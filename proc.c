@@ -40,33 +40,51 @@ pinit(void)
   ptable.queue[3].qtime = 8;
 }
 
-int
-findNextQueueIndex(struct queue *q, enum procstate state) 
+void
+printq(struct queue *q) 
 {
-  int c = 0;
-  int i = q->pindex;
+  struct proc *p;
+  cprintf("q%d contents: \n", q->qlevel);
+
+  for(int i = 0; i < NPROC; i++) {
+    p = q->proc[i];
+    if (!(p == 0) && p->state != UNUSED) {
+      cprintf("[qpid %d] ", i);
+      cprintf("proc %s ", p->name);
+      cprintf("pid %d | ", p->pid);
+    }
+  }
+
+  cprintf("\n");
+}
+
+int
+findNextQueueIndex(struct queue *q, enum procstate state, int skip) 
+{
+  long c = 0;
+  long max = NPROC;
+  int i = q->pindex + skip;
   
-  while(c < NPROC) {
+  while (c < max) {
+    if (i >= NPROC)
+      i -= NPROC; 
+
     if (state == UNUSED) 
-      if (q->proc[i] == 0 || q->proc[i]->state == UNUSED) {
-        //cprintf("[UNUSED] ql: %d, i: %d\n", q->qlevel, i);
+      if (q->proc[i] == 0 || (!(q->proc[i] == 0) && q->proc[i]->state == UNUSED)) {
         break;
       }
     
     if (state == RUNNABLE)
-      if (q->proc[i] != 0 && q->proc[i]->state == RUNNABLE) {
-        //cprintf("[RUNNABLE] ql: %d, i: %d\n", q->qlevel, i);
+      if (!(q->proc[i] == 0) && q->proc[i]->state == RUNNABLE) {
         break;
       }
 
     c++;
     i++;
-    if (i >= NPROC)
-      i = 0; 
   }
 
   // Failed to find free index.
-  if (c == NPROC)
+  if (c >= max)
     return -1;
 
   return i;
@@ -93,7 +111,7 @@ allocproc(void)
 
 found:
   q = &ptable.queue[0];
-  int i = findNextQueueIndex(q, UNUSED);
+  int i = findNextQueueIndex(q, UNUSED, 0);
   if (i >= 0) {
     q->pindex = i;
     q->proc[i] = p;
@@ -105,6 +123,8 @@ found:
   p->qtime = q->qtime;
 
   p->pid = nextpid++;
+  q->lastusedpid = p->pid;
+
   release(&ptable.lock);
 
   // Allocate kernel stack.
@@ -336,11 +356,12 @@ scheduler(void)
 
     int found = 0;
     for (q = ptable.queue; q < &ptable.queue[4]; q++) {
-      int i = findNextQueueIndex(q, RUNNABLE);
+      int i = findNextQueueIndex(q, RUNNABLE, 0);
 
       if (i >= 0) {
         q->pindex = i;
         p = q->proc[i];
+
         found = 1;
         break;
       }
@@ -365,27 +386,40 @@ scheduler(void)
       cprintf("Process %s %d used %dms in Q%d\n", p->name, p->pid, 10, q->qlevel);
 
       p->qtime--;
+
       if (!p->qtime) {
         if (q->qlevel < 3) {
           nq = &ptable.queue[q->qlevel + 1];
-          int i = findNextQueueIndex(nq, UNUSED);
+          int i = findNextQueueIndex(nq, UNUSED, 0);
           nq->proc[i] = p;
           p->qtime = nq->qtime;
           q->proc[q->pindex] = 0;
+          //cprintf("%s Q%d to Q%d\n", p->name, q->qlevel, nq->qlevel);
         } else {
           p->lqruns++;
 
-          if (p->lqruns >= 3) {
+          if (p->lqruns < 3) {
+            //cprintf("lqruns < 3\n");
+            p->qtime = q->qtime;
+            int i = findNextQueueIndex(q, RUNNABLE, 1);
+            q->pindex = i;
+          } else {
+            //cprintf("lqruns >= 3\n");
             nq = &ptable.queue[0];
-            int i = findNextQueueIndex(nq, UNUSED);
+            int i = findNextQueueIndex(nq, UNUSED, 0);
             nq->proc[i] = p;
             p->qtime = nq->qtime;
             p->lqruns = 0;
+
             q->proc[q->pindex] = 0;
-          } else {
-            p->qtime = q->qtime;
-            q->pindex++;
+            i = findNextQueueIndex(q, RUNNABLE, 0);
+            if (i >= 0)
+              q->pindex = i;
           }
+
+          //printq(q);
+          //cprintf("after if block\n");
+          //cprintf("Next q3 proc qid: %d\n", q->pindex);
         }
       }
     }

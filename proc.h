@@ -77,6 +77,7 @@ struct queue {
   int qtime;
   int pindex;
   int pcount;
+  int lastusedpid;
   struct proc *proc[NPROC];
 };
 
